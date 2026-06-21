@@ -20,6 +20,7 @@ vendor/
 
 # 実行時成果物
 smoke_result.txt
+stability_result.txt
 screen_smoke.png
 iTunes64Setup.exe
 itunes_extract/

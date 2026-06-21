@@ -3,20 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ios-connect</title>
+  <title>fgo_ai_connect</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header>
-    <h1>ios-connect</h1>
+    <h1>fgo_ai_connect</h1>
     <div id="status" class="status">接続中...</div>
   </header>
 
   <main>
     <div id="screen-wrap" class="screen-wrap">
       <img id="screen" alt="iPhone screen" />
-      <div id="overlay" class="overlay hidden"></div>
-      <div id="hint" class="hint hidden">WDA 未接続。Phase 0 の検証を完了してください。</div>
+      <div id="ripple" class="ripple hidden"></div>
+      <div id="overlay" class="overlay hidden">
+        <div id="hint" class="hint">WDA 未接続。iPhone 接続・Developer Mode・tunnel 起動を確認してください。</div>
+      </div>
     </div>
 
     <aside class="controls">

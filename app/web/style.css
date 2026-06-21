@@ -35,11 +35,26 @@ main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
 #screen { display: block; width: 100%; height: auto; touch-action: none; cursor: pointer; }
 .overlay {
   position: absolute; inset: 0;
-  background: rgba(0,0,0,0.5);
+  background: rgba(0,0,0,0.55);
   display: flex; align-items: center; justify-content: center;
 }
 .hidden { display: none !important; }
 .hint { color: #fff; font-size: 13px; padding: 16px; text-align: center; }
+
+/* tap feedback ripple */
+.ripple {
+  position: absolute;
+  width: 24px; height: 24px;
+  margin: -12px 0 0 -12px;
+  border-radius: 50%;
+  background: rgba(74, 158, 255, 0.5);
+  pointer-events: none;
+  animation: ripple-pop 0.4s ease-out forwards;
+}
+@keyframes ripple-pop {
+  0%   { transform: scale(0.4); opacity: 0.7; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
 
 .controls { width: 220px; }
 .controls h2 { font-size: 13px; margin: 12px 0 6px; color: #9ab; }

@@ -19,6 +19,7 @@ PC（**Windows / Mac 両対応**）のブラウザから iPhone の **FGO（Fate
 - [設定（環境変数）](#設定環境変数)
 - [実行](#実行)
   - [スモーク検証](#スモーク検証)
+  - [長時間安定性検証](#長時間安定性検証)
   - [アプリ起動](#アプリ起動)
 - [トラブルシューティング](#トラブルシューティング)
 
@@ -119,6 +120,7 @@ tunnel の remote start-tunnel には CoreDevice pair record（`~/.pymobiledevic
 |----------|--------|------|
 | `IOS_CONNECT_UDID` | None（auto-detect） | iPhone の UDID。未設定時は最初に見つけたデバイスを使用（1 台なら自動）。 |
 | `IOS_CONNECT_WDA_BUNDLE` | `com.example.WebDriverAgentRunner.xctrunner` | WDA xctest runner の bundle id。ビルドした .app の `CFBundleIdentifier` と完全一致させる。 |
+| `IOS_CONNECT_WDA_BUILD_EPOCH` | None（`vendor/*.app` の mtime で自動検出） | WDA .app のビルド日時（UNIX epoch 秒）。署名残日数の基準。未設定時は .app mtime から自動検出。 |
 
 例（Mac）:
 ```bash
@@ -148,6 +150,20 @@ sudo .venv313/bin/python scripts/verify_smoke.py --skip-install
 - `--udid <UDID>`: UDID 明示（環境変数未使用時）。
 
 成功すれば `smoke_result.txt` に `[OK]` が並ぶ。
+
+### 長時間安定性検証
+
+起動中のバックエンドに対し、ready 率・ロック→自動再接続イベント・MJPEG fps を N 分間計測する。このスクリプトは HTTP のみでバックエンドを叩くため **sudo 不要**（非管理者ターミナルで実行）。
+
+1. バックエンドを起動（上記アプリ起動手順・sudo）。
+2. 別ターミナルで:
+```bash
+.venv313/bin/python scripts/verify_stability.py --duration 600
+```
+- `--duration <秒>`: 計測時間（既定 600=10分）。
+- `--fps-every <秒>`: fps サンプリング間隔（既定 60）。
+
+結果は `stability_result.txt` に tee される。**autolock 実効検証**: iPhone をアンロックして計測開始 → 放置 → 5分でロック（Face ID 端末は Auto-Lock 最長5分）で ready が false に落ち → 手動アンロックでバックエンドが WDA のみ再起動して ready が true に戻る様子を `reconnect events` で確認。
 
 ### アプリ起動
 
@@ -186,6 +202,9 @@ mjpeg keepalive consuming frames (n=31)   # 3 秒ごとに増え続ける = WDA 
 - **WDA がすぐに終了して画面が出ない**
   → iOS 26 が WDA ランナーを 5 秒で kill する問題。本アプリは MJPEG ストリームを連続受信して WDA を稼働状態に保つことで自動回避する（既定で有効）。ログで `mjpeg keepalive consuming frames` が増え続ければ回避成功。
 
+- **画面がアイドルでロックされ、セッションが切れる**
+  → Face ID 端末は Auto-Lock を「なし」に設定できない（最長5分）。本アプリは autolock リセット用のスワイプ keepalive を廃止した（FGO で画面中央スワイプが誤入力を誘発するため）。iPhone 側で **設定 → 画面表示と明るさ → 自動ロック を最長（5分）** に設定すること。アイドル5分でロックされると WDA セッションが切れるが、バックエンドが WDA のみ再起動して自動再接続する（tunnel は維持）。**操作中はリモートタップが autolock タイマーをリセットするのでロックしない**。長時間放置する場合は `scripts/verify_stability.py` でロック→再接続の挙動を確認。
+
 - **`no RSD discovered via get_rsds`**
   → デバイス未接続 / NCM 広告なし / pair record 無し。USB 接続・NCM モード・開発者モードを確認。Mac は sudo 必須（非 root で広告 0 件）。Windows は NCM ドライバ導入済みか。
 
@@ -196,7 +215,7 @@ mjpeg keepalive consuming frames (n=31)   # 3 秒ごとに増え続ける = WDA 
   → WDA .app の組み込み XCTest フレームワーク削除漏れ。[ビルド手順](#4-wda-app-のビルドmac--xcode-必須) の FW 削除ステップを確認。
 
 - **署名期限（7 日）切れで WDA が起動しない**
-  → Mac で WDA .app を再ビルドし `vendor/` に配置。`/api/status` が残り日数を返す（UI は 3 日前から警告）。
+  → Mac で WDA .app を再ビルドし `vendor/` に配置。`/api/status` が残り日数を返す（UI は 3 日前から警告）。署名基準日は `vendor/WebDriverAgentRunner-Runner.app` の mtime から自動検出（環境変数 `IOS_CONNECT_WDA_BUILD_EPOCH` で明示上書きも可）。
 
 - **WDA ビルドで CodeSign が `errSecInternalComponent` で失敗する**
   → キーチェーン ACL 問題。`security unlock-keychain` でロックを解除し、`security set-key-partition-list` で codesign に鍵アクセスを許可してから再ビルド（詳細は [`scripts/MAC_BUILD_INSTRUCTIONS.md`](scripts/MAC_BUILD_INSTRUCTIONS.md)）。

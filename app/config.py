@@ -7,8 +7,36 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+_logger = logging.getLogger(__name__)
+
+
+def _detect_build_epoch(app_path: str) -> float | None:
+    """WDA .app が存在すればその mtime をビルド日時として返す。
+
+    .app はディレクトリなので Path.stat().st_mtime を使う。署名基準日（無料 Apple ID
+    は7日失効）の既定値を、運用時の環境変数 IOS_CONNECT_WDA_BUILD_EPOCH 指定なしでも
+    自動で埋めるために使う。.app が無い（未ビルド）なら None。
+    """
+    try:
+        return Path(app_path).stat().st_mtime
+    except OSError:
+        return None
+
+
+def resolve_build_epoch() -> float | None:
+    """署名基準日を決定: env 指定（IOS_CONNECT_WDA_BUILD_EPOCH）> .app mtime 自動検出 > None。"""
+    if settings.wda_build_epoch is not None:
+        return settings.wda_build_epoch
+    epoch = _detect_build_epoch(settings.wda_app_path)
+    if epoch is not None:
+        _logger.info("auto-detected WDA build epoch from %s mtime: %.0f",
+                     settings.wda_app_path, epoch)
+    return epoch
 
 
 @dataclass
@@ -95,17 +123,10 @@ class Settings:
     # アクティビティで idle 判定を回避するため、5秒 window 内に複数回叩くよう短めに設定。
     watchdog_interval: float = 2.0
 
-    # autolock 抑制: Face ID 端末は自動ロック「なし」不可（最大5分）。画面中央の 1px
-    # 微小スワイプを keepalive_interval ごとに送り autolock タイマーをリセットする。
-    # 5秒kill(OSレベル)の対策ではなく、ロックによる WDA セッション切断の対策。
-    keepalive_enabled: bool = True
-    keepalive_interval: float = 240.0  # < 300s (Face ID 端末の最大 autolock)
-
-    # MJPEG keepalive: continuously consume WDA's MJPEG stream (open socket +
-    # sustained frame reads) to keep the runner I/O-hot. Hypothesis: iOS 26's 5s
-    # kill is a testmanagerd idle retirement; a persistent MJPEG read is stronger
-    # than intermittent /status polling. Frames are discarded (the read is the
-    # keepalive). Disable to compare baseline behavior.
+    # autolock リセットのスワイプ keepalive は廃止（FGO で画面中央スワイプが誤入力を
+    # 誘発するため）。Face ID 端末は Auto-Lock 最長5分→アイドル5分でロック→バックエンド
+    # が WDA のみ再起動して自動再接続。実使用中はリモートタップが autolock タイマーを
+    # リセットするのでロックしない。runner 延命(5秒kill対策)は下の MJPEG keepalive。
     mjpeg_keepalive_enabled: bool = True
 
     # WDA .app のインストールをスキップ（既にデバイスにインストール済み前提）。
@@ -114,8 +135,13 @@ class Settings:
     # 本番は署名7日ごとの再ビルド時に一度だけ False で再インストールする運用にする。
     wda_skip_install: bool = True
 
-    # 署名基準日（.app のビルド日時）。運用時に上書き。
-    wda_build_epoch: float | None = None
+    # 署名基準日（.app のビルド日時）。環境変数 IOS_CONNECT_WDA_BUILD_EPOCH で上書き可。
+    # 未設定時は wda_app_path の .app mtime から自動検出（_detect_build_epoch）。
+    wda_build_epoch: float | None = (
+        float(os.environ["IOS_CONNECT_WDA_BUILD_EPOCH"])
+        if os.environ.get("IOS_CONNECT_WDA_BUILD_EPOCH")
+        else None
+    )
 
     @property
     def wda_http_url(self) -> str:

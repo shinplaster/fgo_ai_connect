@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pymobiledevice3.remote.tunnel_service import TunnelProtocol
 
 from app.api import routes_input, routes_status, routes_stream
-from app.config import settings
+from app.config import resolve_build_epoch, settings
 from app.device.tunnel import TunnelManager
 from app.device.wda import WdaDeployer
 from app.device.wda_client import WdaClient
@@ -60,7 +60,7 @@ async def _connect_once() -> None:
         target_bundle_id=settings.wda_target_bundle_id,
         http_port=settings.wda_http_port,
         mjpeg_port=settings.wda_mjpeg_port,
-        build_epoch=settings.wda_build_epoch,
+        build_epoch=resolve_build_epoch(),
         wda_ready_timeout=settings.wda_ready_timeout,
         skip_install=settings.wda_skip_install,
     )
@@ -149,28 +149,6 @@ async def _teardown_connection(keep_tunnel: bool = True) -> None:
         state.tunnel = None
 
 
-async def _keepalive() -> None:
-    """Send a 1px swipe at screen center to reset the iOS autolock timer.
-
-    Face ID devices cannot disable autolock (max 5 min); a minimal gesture keeps
-    the screen awake while the user views it. Not a countermeasure for the 5s-kill.
-    """
-    if state.wda is None:
-        return
-    screen = state.screen or {}
-    w = screen.get("width")
-    h = screen.get("height")
-    if not w or not h:
-        return
-    cx, cy = int(w / 2), int(h / 2)
-    try:
-        await state.wda.swipe(cx, cy, cx, cy + 1, duration_ms=50)
-        logger.info("keepalive swipe sent (%d,%d)->(%d,%d)", cx, cy, cx, cy + 1)
-    except Exception as e:
-        # Failure is non-fatal: the watchdog health check will trigger reconnect.
-        logger.warning("keepalive swipe failed: %s", e)
-
-
 async def _mjpeg_keepalive(udid: str) -> None:
     """Continuously consume WDA's MJPEG stream to keep the runner I/O-hot.
 
@@ -234,20 +212,17 @@ async def _connect_loop() -> None:
             await _connect_once()
             logger.info("connected")
             # 維持フェーズ：定期ヘルスチェック。切れたら接続フェーズへ戻る。
-            last_keepalive = asyncio.get_event_loop().time()
+            # autolock リセットのスワイプ keepalive は廃止（FGO で誤入力リスク）。
+            # Face ID 端末は Auto-Lock 最長5分→アイドル5分でロック→WDA セッション切断→
+            # ヘルスチェック失敗で WDA のみ再起動し自動再接続。操作中のリモートタップが
+            # autolock タイマーをリセットするので実使用中はロックしない。5秒kill 対策の
+            # MJPEG keepalive は別物（_mjpeg_keepalive）で維持。
             while True:
                 await asyncio.sleep(settings.watchdog_interval)
                 if state.tunnel is None or not await state.tunnel.is_alive():
                     logger.warning("tunnel down, reconnecting")
                     await _teardown_connection(keep_tunnel=False)
                     break
-                # autolock リセット（Face ID 端末は最大5分でロック→WDA セッション切断）。
-                # 画面中央の 1px 微小スワイプでタイマーをリセット。5秒kill とは無関係。
-                if settings.keepalive_enabled and state.wda is not None:
-                    now = asyncio.get_event_loop().time()
-                    if now - last_keepalive >= settings.keepalive_interval:
-                        last_keepalive = now
-                        await _keepalive()
                 if state.wda is not None:
                     try:
                         data = await state.wda.status()
