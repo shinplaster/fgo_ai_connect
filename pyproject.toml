@@ -1,0 +1,34 @@
+[project]
+name = "ios-connect"
+version = "0.1.0"
+description = "Display and control an iPhone (iOS 17+) from a PC browser over USB"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "websockets>=12.0",
+    "pymobiledevice3>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+ios-connect = "app.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.web" = ["*.html", "*.js", "*.css"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

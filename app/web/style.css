@@ -1,0 +1,58 @@
+:root {
+  --bg: #1e1e1e;
+  --panel: #2a2a2a;
+  --fg: #e0e0e0;
+  --accent: #4a9eff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid #333;
+}
+header h1 { font-size: 16px; margin: 0; }
+.status { font-size: 13px; color: #9ab; }
+
+main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+.screen-wrap {
+  position: relative;
+  max-width: 420px;
+  border: 2px solid #333;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  user-select: none;
+}
+#screen { display: block; width: 100%; height: auto; touch-action: none; cursor: pointer; }
+.overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+}
+.hidden { display: none !important; }
+.hint { color: #fff; font-size: 13px; padding: 16px; text-align: center; }
+
+.controls { width: 220px; }
+.controls h2 { font-size: 13px; margin: 12px 0 6px; color: #9ab; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.buttons button, .keys button {
+  background: var(--panel); color: var(--fg);
+  border: 1px solid #444; border-radius: 6px;
+  padding: 6px 10px; cursor: pointer; font-size: 13px;
+}
+.buttons button:hover, .keys button:hover { border-color: var(--accent); }
+.keys { display: flex; gap: 6px; }
+.keys input {
+  flex: 1; background: #111; color: var(--fg);
+  border: 1px solid #444; border-radius: 6px; padding: 6px;
+}
+.controls p { font-size: 11px; color: #777; }

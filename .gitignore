@@ -1,0 +1,39 @@
+.aider*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Build artifacts
+dist/
+build/
+DerivedData/
+*.app
+*.ipa
+vendor/
+
+# 実行時成果物
+smoke_result.txt
+screen_smoke.png
+iTunes64Setup.exe
+itunes_extract/
+backend.log
+*.log
+apps_list.txt
+lockdown_info.txt
+usbmux_now.txt
+xct_dump.txt
+xct_listener.txt
+coredevice_pair_result.txt
+coredevice_tunnel_result.txt
+hid_touch_result.txt
+
+# IDE
+.vscode/
+.idea/
