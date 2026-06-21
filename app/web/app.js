@@ -23,6 +23,37 @@ const USER_ACTION_HINT = {
   connect_usb: "iPhone を USB 接続してください",
 };
 
+// Map a raw backend error string to a short, actionable Japanese message for
+// the overlay hint. The raw string can be a long pymobiledevice3 exception
+// (e.g. "WDA session creation returned no sessionId: {…}") which is unreadable
+// in the big centered overlay; the status line still carries a trimmed copy.
+//
+// Most errors here are NOT user-actionable — the lifecycle loop auto-retries
+// while desired stays true — so the message should say "自動で再試行していま
+// す", not "再度押してください". Only testmanagerd/No-such-service needs the
+// user to plug into a Mac to re-init CoreDevice (not auto-recoverable).
+// USB-unplug and lock are surfaced via user_action instead (handled elsewhere).
+function friendlyError(msg) {
+  if (!msg) return null;
+  const s = String(msg);
+  if (/タイムアウト|timeout/i.test(s))
+    return "接続がタイムアウトしました。自動で再試行しています…";
+  if (/Not authorized|XCTDaemonErrorDomain|session not created/i.test(s))
+    return "WDA の起動に失敗しました。自動で再試行しています…";
+  if (/testmanagerd|No such service/i.test(s))
+    return "デバイス側サービスが見つかりません。Mac 接続で初期化してください";
+  // Trim any other raw error to keep the overlay tidy; assume auto-retry.
+  return "接続エラー。自動で再試行しています… (" + s.slice(0, 40) + ")";
+}
+
+// Trim a raw error for the small status line (avoid a multi-line exception
+// flooding the header).
+function trimError(msg) {
+  if (!msg) return "";
+  const s = String(msg);
+  return s.length > 60 ? s.slice(0, 60) + "…" : s;
+}
+
 // --- stream liveness: track <img> frame loads (multipart/x-mixed-replace) ---
 let loadTimes = []; // recent frame load timestamps (ms)
 const STREAM_STALE_MS = 3000;
@@ -58,7 +89,12 @@ async function pollStatus() {
   desired = !!d.desired;
   busy = !!d.busy;
   userAction = d.user_action || null;
-  if (d.screen && d.screen.width) screenInfo = d.screen;
+  if (d.screen && d.screen.width) {
+    screenInfo = d.screen;
+    // Keep the screen-wrap shaped like the device even when the <img> has no
+    // src (disconnected) so the overlay/hint doesn't collapse.
+    wrap.style.aspectRatio = `${d.screen.width} / ${d.screen.height}`;
+  }
 
   // Reset the stream <img> when we lose the connection so a stale frame
   // doesn't linger (symmetric to the ready && !src assignment below).
@@ -82,9 +118,9 @@ async function pollStatus() {
     parts.push(desired ? "接続中…" : "切断中…");
   } else if (desired) {
     // Not ready, not busy, but want to be connected -> an error is gating us.
-    parts.push(d.error ? `エラー: ${d.error}` : "再接続待ち…");
+    parts.push(d.error ? `エラー: ${trimError(d.error)}` : "再接続待ち…");
   } else {
-    parts.push(d.error ? `エラー: ${d.error}` : "未接続");
+    parts.push(d.error ? `エラー: ${trimError(d.error)}` : "未接続");
   }
   if (d.sign_remaining_days != null && d.sign_remaining_days < 3) {
     parts.push(`署名残り${Math.ceil(d.sign_remaining_days)}日`);
@@ -96,13 +132,18 @@ async function pollStatus() {
   overlay.classList.toggle("hidden", !showOverlay);
   hint.classList.toggle("hidden", !showOverlay);
   if (showOverlay) {
+    // Decide hint text + whether it's an actionable warning (yellow bold) or
+    // a neutral prompt (idle / connecting).
+    let warn = false;
     if (userAction && USER_ACTION_HINT[userAction]) {
       hint.textContent = USER_ACTION_HINT[userAction];
+      warn = true;
     } else if (ready) {
       // unreachable (overlay hidden when ready) -- keep a sane default
       hint.textContent = "";
     } else if (desired && !busy && d.error) {
-      hint.textContent = d.error;
+      hint.textContent = friendlyError(d.error);
+      warn = true;
     } else if (desired && busy) {
       hint.textContent = "接続中…（「切断」で中止できます）";
     } else if (desired) {
@@ -110,6 +151,7 @@ async function pollStatus() {
     } else {
       hint.textContent = "右側の「接続」ボタンを押してください。";
     }
+    hint.classList.toggle("warn", warn);
   }
 
   // Connect/Disconnect button visibility + disabled state.
