@@ -143,7 +143,39 @@ class WdaDeployer:
             return False
         return not self._xctrunner_task.done()
 
-    async def stop(self) -> None:
+    async def kill_runner(self) -> None:
+        """Explicitly kill the WDA runner process via ProcessControl so iOS
+        dismisses the on-device "Automation running" banner.
+
+        Must run BEFORE cancelling _xctrunner_task and BEFORE
+        service_provider.close(): the pid is only resolvable via
+        process_identifier_for_bundle_identifier while the runner is still
+        alive, and DvtProvider needs the RSD service_provider still open.
+        Best-effort: on any failure we fall back to task-cancel (stop()) which
+        drops the testmanagerd connections.
+        """
+        if self.service_provider is None or self._xctrunner_task is None:
+            return
+        try:
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+            from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+            async with DvtProvider(self.service_provider) as dvt, ProcessControl(dvt) as pc:
+                pid = await pc.process_identifier_for_bundle_identifier(self.runner_bundle_id)
+                if pid:
+                    await pc.kill(pid)
+                    logger.info("killed WDA runner pid=%s (bundle=%s)", pid, self.runner_bundle_id)
+                else:
+                    logger.info("WDA runner not running (pid=0), nothing to kill")
+        except Exception as e:
+            logger.warning("kill_runner failed (%s); falling back to task cancel", e)
+
+    async def stop(self, kill: bool = True) -> None:
+        """Stop the WDA runner. With kill=True (default) explicitly kill the
+        runner process first so the "Automation running" banner is dismissed,
+        then cancel the xctest task and close the RSD service_provider.
+        """
+        if kill:
+            await self.kill_runner()
         if self._xctrunner_task is not None and not self._xctrunner_task.done():
             self._xctrunner_task.cancel()
             try:

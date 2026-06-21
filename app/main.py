@@ -44,6 +44,21 @@ async def _connect_once() -> None:
     安定性（testmanagerd 等）を保つ。
     """
     state.error = None
+    state.user_action = None
+
+    # Early device-presence check: skip the expensive tunnel bringup and surface
+    # a friendly "connect USB" hint if no iPhone is reachable via usbmux.
+    from pymobiledevice3 import usbmux
+    dev = await usbmux.select_device(settings.device_udid) if settings.device_udid else None
+    if dev is None:
+        devs = await usbmux.list_devices()  # udid unset -> pick by list
+        dev = devs[0] if devs else None
+    if dev is None:
+        state.user_action = "connect_usb"
+        raise ConnectionError(
+            "iPhone が USB 接続されていません。USB ケーブル・Developer Mode・信頼設定を確認してください。"
+        )
+
     if state.tunnel is None:
         proto = TunnelProtocol.TCP if settings.tunnel_protocol == "tcp" else TunnelProtocol.QUIC
         state.tunnel = TunnelManager(
@@ -85,6 +100,9 @@ async def _connect_once() -> None:
     # Instead, retry create_session while waiting for the user to manually unlock.
     deadline = asyncio.get_event_loop().time() + settings.session_unlock_wait_timeout
     while True:
+        # Abort the unlock wait if the user clicked Disconnect mid-connect.
+        if not state.desired_connected:
+            raise RuntimeError("aborted by disconnect")
         try:
             await state.wda.create_session(settings.wda_target_bundle_id)
             break
@@ -95,10 +113,19 @@ async def _connect_once() -> None:
                 or "BSErrorCodeDescription=Locked" in msg
                 or "FBSOpenApplicationErrorDomain Code=7" in msg
             )
-            if not is_locked or asyncio.get_event_loop().time() >= deadline:
+            if not is_locked:
                 raise
+            if asyncio.get_event_loop().time() >= deadline:
+                raise ConnectionError(
+                    "iPhone のアンロック待ちがタイムアウトしました。"
+                    "iPhone をアンロックして再度「接続」を押してください。"
+                )
+            # Surface an "unlock" hint so the UI prompts the user instead of
+            # showing a generic "connecting..." while we wait up to 180s.
+            state.user_action = "unlock"
             logger.warning("device locked, waiting for manual unlock to create session (retry in 2s)")
             await asyncio.sleep(2)
+    state.user_action = None
     state.screen = state.wda.screen_info
     state.ready = True
     logger.info("WDA ready. screen=%s", state.screen)
@@ -121,8 +148,12 @@ async def _connect_once() -> None:
 async def _teardown_connection(keep_tunnel: bool = True) -> None:
     """WDA と deployer を止める。keep_tunnel=True かつ tunnel が生きていれば
     tunnel は維持し、次の _connect_once で WDA だけ再起動する。
+
+    deployer.stop(kill=True) が runner プロセスを明示 kill するので、端末側の
+    "Automation running" banner が消える。
     """
     state.ready = False
+    state.user_action = None
     await _stop_mjpeg_keepalive()
     if state.wda is not None:
         try:
@@ -133,7 +164,7 @@ async def _teardown_connection(keep_tunnel: bool = True) -> None:
         state.wda = None
     if state.deployer is not None:
         try:
-            await state.deployer.stop()
+            await state.deployer.stop(kill=True)
         except Exception:
             pass
         state.deployer = None
@@ -199,75 +230,177 @@ async def _stop_mjpeg_keepalive() -> None:
             pass
 
 
-async def _connect_loop() -> None:
-    """接続を確立し維持する。切断・失敗時は間隔を空けて再試行。
+def _is_device_absent_error(msg: str) -> bool:
+    """Errors that mean the user needs to plug the iPhone in."""
+    return ("USB 接続されていません" in msg
+            or "no RSD discovered" in msg
+            or "device not found" in msg)
 
-    tunnel は可能な限り維持し、WDA だけ再起動する（RSD のサービス一覧の安定化）。
-    ただし tunnel 死亡時や testmanagerd サービス不在（RSD のサービス一覧問題）は
-    tunnel を作り直す。
+
+def _is_unlock_timeout_error(msg: str) -> bool:
+    return "アンロック待ちがタイムアウト" in msg
+
+
+async def _maintain_until_drop() -> None:
+    """健康チェックループを desired_connected && ready の間回す。
+
+    接続が切れたら（state.tunnel_died をセットして）戻り、呼び出し元の
+    keep_tunnel 判定に使う。desired が False に反転しても戻る（呼び出し元が
+    再チェック）。wakeup event で Disconnect クリックを即時検知する。
+    """
+    while state.desired_connected:
+        # Wake early on desired flips during the watchdog sleep.
+        try:
+            await asyncio.wait_for(state.wakeup.wait(), timeout=settings.watchdog_interval)
+            state.wakeup.clear()
+            if not state.desired_connected:
+                state.tunnel_died = False
+                return
+        except asyncio.TimeoutError:
+            pass
+        if state.tunnel is None or not await state.tunnel.is_alive():
+            state.tunnel_died = True
+            logger.warning("tunnel down, reconnecting")
+            return
+        if state.wda is not None:
+            try:
+                data = await state.wda.status()
+                # /status normally OMITS sessionId (WDA returns it only on
+                # /session). Use WDA's ready flag as the liveness signal;
+                # recreate only when WDA reports not ready.
+                if not data.get("value", {}).get("ready", True):
+                    logger.info("WDA not ready, recreating session")
+                    await state.wda.create_session()
+                    state.screen = state.wda.screen_info
+            except Exception:
+                logger.warning("WDA health check failed, reconnecting")
+                state.tunnel_died = False
+                return
+    state.tunnel_died = False
+
+
+async def _lifecycle_loop() -> None:
+    """Desired-state 調整ループ（ページ駆動接続/切断の本体）。
+
+    desired_connected=False なら wakeup.wait() でアイドル待機（起動時もここ）。
+    True なら接続＋維持。維持中の一時切断（5秒kill・ロック等）は desired 仍 True
+    の間は自動再接続。False に反転したら teardown(keep_tunnel=True) してアイドルへ。
+    すべての connect/teardown は lifecycle_lock 内で実行し API ハンドラと直列化。
     """
     backoff = 5.0
     while True:
         try:
-            await _connect_once()
-            logger.info("connected")
-            # 維持フェーズ：定期ヘルスチェック。切れたら接続フェーズへ戻る。
-            # autolock リセットのスワイプ keepalive は廃止（FGO で誤入力リスク）。
-            # Face ID 端末は Auto-Lock 最長5分→アイドル5分でロック→WDA セッション切断→
-            # ヘルスチェック失敗で WDA のみ再起動し自動再接続。操作中のリモートタップが
-            # autolock タイマーをリセットするので実使用中はロックしない。5秒kill 対策の
-            # MJPEG keepalive は別物（_mjpeg_keepalive）で維持。
-            while True:
-                await asyncio.sleep(settings.watchdog_interval)
-                if state.tunnel is None or not await state.tunnel.is_alive():
-                    logger.warning("tunnel down, reconnecting")
-                    await _teardown_connection(keep_tunnel=False)
-                    break
-                if state.wda is not None:
+            if not state.desired_connected:
+                # Idle: wait until the user clicks Connect.
+                state.wakeup.clear()
+                await state.wakeup.wait()
+                state.wakeup.clear()
+                backoff = 5.0
+                state.error = None
+                # Backstop: clear any stale actionable hint so the idle UI shows
+                # "未接続" (the /api/disconnect handler also clears these).
+                state.user_action = None
+                continue
+
+            if state.ready:
+                # Maintain phase. Returns on drop or desired flip.
+                await _maintain_until_drop()
+                if not state.desired_connected:
+                    # User clicked Disconnect during maintain.
+                    async with state.lifecycle_lock:
+                        state.busy = True
+                        try:
+                            await _teardown_connection(keep_tunnel=True)
+                        finally:
+                            state.busy = False
+                    continue
+                # Dropped while desired still True -> reconnect.
+                keep = not state.tunnel_died
+                async with state.lifecycle_lock:
+                    state.busy = True
                     try:
-                        data = await state.wda.status()
-                        # /status normally OMITS sessionId (WDA returns it only on
-                        # /session). Treating sessionId=None as "session lost" was a
-                        # false positive that retried create_session into the iOS 26
-                        # lock loop. Use WDA's ready flag as the liveness signal
-                        # instead; recreate only when WDA reports not ready.
-                        if not data.get("value", {}).get("ready", True):
-                            logger.info("WDA not ready, recreating session")
-                            await state.wda.create_session()
-                            state.screen = state.wda.screen_info
+                        await _teardown_connection(keep_tunnel=keep)
+                    finally:
+                        state.busy = False
+                continue
+
+            # desired True, not ready -> connect.
+            async with state.lifecycle_lock:
+                if not state.desired_connected:
+                    continue  # user flipped to disconnect during wait
+                state.busy = True
+                try:
+                    await _connect_once()
+                    logger.info("connected")
+                    backoff = 5.0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    state.ready = False
+                    state.error = str(e)
+                    msg = str(e)
+                    # Keep the actionable hint (connect_usb / unlock) for UI;
+                    # clear it for non-user-actionable failures.
+                    if not (_is_device_absent_error(msg) or _is_unlock_timeout_error(msg)):
+                        state.user_action = None
+                    logger.warning("connect failed: %s", e)
+                    # testmanagerd / サービス不在 / デバイス未接続 は tunnel を作り直す。
+                    # それ以外（WDA 5秒kill 等）は tunnel を維持して WDA だけ再起動。
+                    keep = ("testmanagerd" not in msg
+                            and "No such service" not in msg
+                            and not _is_device_absent_error(msg))
+                    try:
+                        await _teardown_connection(keep_tunnel=keep)
                     except Exception:
-                        logger.warning("WDA health check failed, reconnecting")
-                        await _teardown_connection(keep_tunnel=True)
-                        break
+                        pass
+                    # User-actionable states (plug in / unlock) get a longer,
+                    # fixed backoff; others exponential up to 30s.
+                    if _is_device_absent_error(msg) or _is_unlock_timeout_error(msg):
+                        backoff = 10.0
+                    else:
+                        backoff = min(backoff * 2, 30.0)
+                finally:
+                    state.busy = False
+
+            # Backoff before retry, but wake early if desired flips.
+            if state.error is not None and state.desired_connected:
+                try:
+                    await asyncio.wait_for(state.wakeup.wait(), timeout=backoff)
+                    state.wakeup.clear()
+                except asyncio.TimeoutError:
+                    pass
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            state.ready = False
-            state.error = str(e)
-            logger.warning("connect failed: %s (retry in %ss)", e, backoff)
-            # testmanagerd / サービス不在は RSD のサービス一覧問題 → tunnel を作り直す。
-            # それ以外（WDA 5秒kill 等）は tunnel を維持して WDA だけ再起動。
-            msg = str(e)
-            keep = "testmanagerd" not in msg and "No such service" not in msg
-            await _teardown_connection(keep_tunnel=keep)
+            logger.exception("lifecycle loop crashed: %s", e)
             try:
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(5.0)
             except asyncio.CancelledError:
                 raise
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_connect_loop())
+    # Idle startup: start the reconciler but do NOT set desired_connected.
+    # The user opens the browser and clicks 接続 to connect for the first time.
+    task = asyncio.create_task(_lifecycle_loop(), name="lifecycle")
     try:
         yield
     finally:
+        state.desired_connected = False
+        state.wakeup.set()
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
-        await _teardown_connection(keep_tunnel=False)
+        async with state.lifecycle_lock:
+            state.busy = True
+            try:
+                await _teardown_connection(keep_tunnel=False)
+            finally:
+                state.busy = False
 
 
 def create_app() -> FastAPI:

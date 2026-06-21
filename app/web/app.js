@@ -6,14 +6,30 @@ const hint = document.getElementById("hint");
 const statusEl = document.getElementById("status");
 const ripple = document.getElementById("ripple");
 const wrap = document.getElementById("screen-wrap");
+const connectBtn = document.getElementById("connect-btn");
+const disconnectBtn = document.getElementById("disconnect-btn");
 
 let screenInfo = { width: 1, height: 1 }; // device points
 let ready = false;
 let wasReady = false;
+let desired = false;
+let busy = false;
+let userAction = null; // null | "unlock" | "connect_usb"
+
+// User-facing hint text for each user_action (shown in the overlay, prioritized
+// over the generic status line so the user knows what to do).
+const USER_ACTION_HINT = {
+  unlock: "iPhone をアンロックしてください",
+  connect_usb: "iPhone を USB 接続してください",
+};
 
 // --- stream liveness: track <img> frame loads (multipart/x-mixed-replace) ---
 let loadTimes = []; // recent frame load timestamps (ms)
 const STREAM_STALE_MS = 3000;
+// Cooldown for forcing a /stream reload when stale, to avoid a reload loop
+// when the stream is genuinely unable to deliver frames.
+const STREAM_RELOAD_COOLDOWN_MS = 5000;
+let lastStreamReload = 0;
 
 function streamFps() {
   const now = Date.now();
@@ -37,29 +53,94 @@ async function pollStatus() {
     statusEl.textContent = "状態取得失敗";
     return;
   }
+  const prevReady = ready;
   ready = !!d.ready;
+  desired = !!d.desired;
+  busy = !!d.busy;
+  userAction = d.user_action || null;
   if (d.screen && d.screen.width) screenInfo = d.screen;
 
-  // status line: connection + screen + sign + stream
+  // Reset the stream <img> when we lose the connection so a stale frame
+  // doesn't linger (symmetric to the ready && !src assignment below).
+  if (prevReady && !ready) {
+    screenImg.removeAttribute("src");
+    loadTimes = [];
+  }
+
+  // Status line. user_action takes priority (it tells the user what to DO);
+  // otherwise fall back to busy/error/ready framing.
   let parts = [];
-  if (ready) {
+  if (userAction && USER_ACTION_HINT[userAction]) {
+    parts.push(USER_ACTION_HINT[userAction]);
+  } else if (ready) {
     parts.push(`接続中 ${Math.round(screenInfo.width)}x${Math.round(screenInfo.height)}`);
     if (!wasReady) parts.push("（再接続完了）");
     const fps = streamFps();
     if (fps != null) parts.push(`${fps.toFixed(1)}fps`);
     else if (streamStale()) parts.push("ストリーム停止");
+  } else if (busy) {
+    parts.push(desired ? "接続中…" : "切断中…");
+  } else if (desired) {
+    // Not ready, not busy, but want to be connected -> an error is gating us.
+    parts.push(d.error ? `エラー: ${d.error}` : "再接続待ち…");
   } else {
-    parts.push(d.error ? `エラー: ${d.error}` : "未接続・再接続中…");
+    parts.push(d.error ? `エラー: ${d.error}` : "未接続");
   }
   if (d.sign_remaining_days != null && d.sign_remaining_days < 3) {
     parts.push(`署名残り${Math.ceil(d.sign_remaining_days)}日`);
   }
   statusEl.textContent = parts.join(" / ");
 
-  // overlay: show only when not ready (reconnect banner)
-  overlay.classList.toggle("hidden", ready);
-  hint.classList.toggle("hidden", ready);
-  if (ready && !screenImg.src) screenImg.src = "/stream";
+  // Overlay + hint: visible whenever we don't have a live screen.
+  const showOverlay = !ready;
+  overlay.classList.toggle("hidden", !showOverlay);
+  hint.classList.toggle("hidden", !showOverlay);
+  if (showOverlay) {
+    if (userAction && USER_ACTION_HINT[userAction]) {
+      hint.textContent = USER_ACTION_HINT[userAction];
+    } else if (ready) {
+      // unreachable (overlay hidden when ready) -- keep a sane default
+      hint.textContent = "";
+    } else if (desired && !busy && d.error) {
+      hint.textContent = d.error;
+    } else if (desired && busy) {
+      hint.textContent = "接続中…（「切断」で中止できます）";
+    } else if (desired) {
+      hint.textContent = "接続中…";
+    } else {
+      hint.textContent = "右側の「接続」ボタンを押してください。";
+    }
+  }
+
+  // Connect/Disconnect button visibility + disabled state.
+  // Show 接続 when idle/disconnected, 切断 when connected or wanting to connect.
+  const showConnect = !(desired || ready);
+  const showDisconnect = desired || ready;
+  connectBtn.classList.toggle("hidden", !showConnect);
+  disconnectBtn.classList.toggle("hidden", !showDisconnect);
+  // Connect is disabled while a connect is mid-flight. Disconnect stays
+  // enabled whenever shown so the user can abort a connect — the lifecycle
+  // loop applies the desired flip after the current step (tunnel bringup can
+  // run up to 120s, during which the button must remain clickable).
+  connectBtn.disabled = busy;
+  disconnectBtn.disabled = false;
+
+  if (ready && !screenImg.getAttribute("src")) screenImg.src = "/stream";
+
+  // Auto-reload the MJPEG stream when it goes stale while still "ready".
+  // The multipart/x-mixed-replace connection can stall mid-stream (WDA's
+  // MJPEG server serializes/hogs connections, TCP half-close, etc.) and the
+  // <img> then freezes on the last frame — taps still work (separate HTTP)
+  // but the screen stops updating. Force a fresh connection with a
+  // cache-buster, rate-limited so a genuinely dead stream doesn't spin.
+  if (ready && screenImg.getAttribute("src") && streamStale()) {
+    const now = Date.now();
+    if (now - lastStreamReload > STREAM_RELOAD_COOLDOWN_MS) {
+      lastStreamReload = now;
+      loadTimes = [];
+      screenImg.src = "/stream?r=" + now;
+    }
+  }
   wasReady = ready;
 }
 setInterval(pollStatus, 3000);
@@ -156,20 +237,7 @@ screenImg.addEventListener("touchend", (e) => {
   const t = e.changedTouches[0]; pointerUp(t.clientX, t.clientY);
 }, { passive: false });
 
-// buttons
-document.querySelectorAll("[data-button]").forEach((btn) => {
-  btn.addEventListener("click", () => post("/api/button", { button: btn.dataset.button }));
-});
-
-// text input
-document.getElementById("send-text").addEventListener("click", () => {
-  const v = document.getElementById("text-input").value;
-  if (v) post("/api/keys", { text: v });
-});
-
-// forward keyboard input when not focused in the text box.
-// Enter -> home removed (accidental home risk during FGO play; use the button).
-window.addEventListener("keydown", (e) => {
-  if (document.activeElement && document.activeElement.tagName === "INPUT") return;
-  if (e.key.length === 1) post("/api/keys", { text: e.key });
-});
+// connection buttons (page-driven connect/disconnect). fire-and-forget; the
+// status poll picks up busy/ready/user_action transitions.
+connectBtn.addEventListener("click", () => post("/api/connect", {}));
+disconnectBtn.addEventListener("click", () => post("/api/disconnect", {}));
