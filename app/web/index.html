@@ -9,31 +9,23 @@
 <body>
   <header>
     <h1>fgo_ai_connect</h1>
-    <div id="status" class="status">接続中...</div>
+    <div id="status" class="status">未接続</div>
   </header>
 
   <main>
     <div id="screen-wrap" class="screen-wrap">
       <img id="screen" alt="iPhone screen" />
       <div id="ripple" class="ripple hidden"></div>
-      <div id="overlay" class="overlay hidden">
-        <div id="hint" class="hint">WDA 未接続。iPhone 接続・Developer Mode・tunnel 起動を確認してください。</div>
+      <div id="overlay" class="overlay">
+        <div id="hint" class="hint">右側の「接続」ボタンを押してください。</div>
       </div>
     </div>
 
     <aside class="controls">
-      <h2>操作</h2>
+      <h2>接続</h2>
       <div class="buttons">
-        <button data-button="home">ホーム</button>
-        <button data-button="volumeUp">音量↑</button>
-        <button data-button="volumeDown">音量↓</button>
-        <button data-button="snapshot">電源</button>
-      </div>
-
-      <h2>テキスト入力</h2>
-      <div class="keys">
-        <input id="text-input" type="text" placeholder="入力して送信" />
-        <button id="send-text">送信</button>
+        <button id="connect-btn">接続</button>
+        <button id="disconnect-btn" class="hidden">切断</button>
       </div>
 
       <h2>ヒント</h2>
