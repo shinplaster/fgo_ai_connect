@@ -9,10 +9,51 @@ from __future__ import annotations
 
 import logging
 import os
+import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
+
+
+def _detect_runner_bundle_id(app_path: str) -> str | None:
+    """Return the CFBundleIdentifier from the WDA .app's Info.plist, or None.
+
+    The .app carries the unique bundle id assigned at Mac+Xcode build time. When
+    IOS_CONNECT_WDA_BUNDLE is unset, auto-detecting it from the .app avoids the
+    .app <-> runner_bundle_id mismatch that makes the connect loop fail with
+    "No app with bundle id ... found". Returns None if the .app is absent or
+    unreadable (not yet built).
+    """
+    try:
+        with open(Path(app_path) / "Info.plist", "rb") as f:
+            return plistlib.load(f).get("CFBundleIdentifier")
+    except (OSError, plistlib.InvalidFileException):
+        return None
+
+
+# Upstream WDA default, used as the last-resort fallback when both the env var
+# and the .app are unavailable (e.g. .app not yet built). Almost always wrong
+# for a real build, so resolution logs when it falls back here.
+_DEFAULT_RUNNER_BUNDLE_ID = "com.example.WebDriverAgentRunner.xctrunner"
+
+
+def resolve_runner_bundle_id() -> str:
+    """Resolve the WDA runner bundle id: env (IOS_CONNECT_WDA_BUNDLE) > .app
+    Info.plist auto-detect > upstream default. Mirrors resolve_build_epoch()."""
+    if settings.wda_runner_bundle_id is not None:
+        return settings.wda_runner_bundle_id
+    bid = _detect_runner_bundle_id(settings.wda_app_path)
+    if bid:
+        _logger.info("auto-detected WDA runner bundle id from %s: %s",
+                     settings.wda_app_path, bid)
+        return bid
+    _logger.warning(
+        "could not auto-detect WDA runner bundle id from %s; "
+        "falling back to %s (set IOS_CONNECT_WDA_BUNDLE or build the .app)",
+        settings.wda_app_path, _DEFAULT_RUNNER_BUNDLE_ID,
+    )
+    return _DEFAULT_RUNNER_BUNDLE_ID
 
 
 def _detect_build_epoch(app_path: str) -> float | None:
@@ -50,9 +91,13 @@ class Settings:
 
     # WDA xctest runner の bundle id（= インストールされる .app の CFBundleIdentifier）。
     # Mac+Xcode ビルド時に一意化した bundle id と完全一致させる（scripts/mac_build.md）。
-    # 例: com.<your-reverse-domain>.WebDriverAgentRunner.xctrunner
-    wda_runner_bundle_id: str = os.environ.get(
-        "IOS_CONNECT_WDA_BUNDLE", "com.example.WebDriverAgentRunner.xctrunner"
+    # 環境変数 IOS_CONNECT_WDA_BUNDLE で明示指定。未設定時は resolve_runner_bundle_id() が
+    # vendor/*.app の Info.plist から自動検出する（.app と不一致で connect ループが
+    # "No app with bundle id ... found" で失敗するのを防ぐ）。None = 未指定（自動検出へ）。
+    wda_runner_bundle_id: str | None = (
+        os.environ["IOS_CONNECT_WDA_BUNDLE"]
+        if os.environ.get("IOS_CONNECT_WDA_BUNDLE")
+        else None
     )
 
     # WDA 起動時に WDA が起動する target app（セッションの起動対象）= FGO で固定。

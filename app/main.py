@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pymobiledevice3.remote.tunnel_service import TunnelProtocol
 
 from app.api import routes_input, routes_status, routes_stream
-from app.config import resolve_build_epoch, settings
+from app.config import resolve_build_epoch, resolve_runner_bundle_id, settings
 from app.device.tunnel import TunnelManager
 from app.device.wda import WdaDeployer
 from app.device.wda_client import WdaClient
@@ -56,7 +56,7 @@ async def _connect_once() -> None:
     state.deployer = WdaDeployer(
         app_path=settings.wda_app_path,
         udid=settings.device_udid,
-        runner_bundle_id=settings.wda_runner_bundle_id,
+        runner_bundle_id=resolve_runner_bundle_id(),
         target_bundle_id=settings.wda_target_bundle_id,
         http_port=settings.wda_http_port,
         mjpeg_port=settings.wda_mjpeg_port,

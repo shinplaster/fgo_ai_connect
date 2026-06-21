@@ -119,13 +119,13 @@ tunnel の remote start-tunnel には CoreDevice pair record（`~/.pymobiledevic
 | 環境変数 | 既定値 | 説明 |
 |----------|--------|------|
 | `IOS_CONNECT_UDID` | None（auto-detect） | iPhone の UDID。未設定時は最初に見つけたデバイスを使用（1 台なら自動）。 |
-| `IOS_CONNECT_WDA_BUNDLE` | `com.example.WebDriverAgentRunner.xctrunner` | WDA xctest runner の bundle id。ビルドした .app の `CFBundleIdentifier` と完全一致させる。 |
+| `IOS_CONNECT_WDA_BUNDLE` | None（`vendor/*.app` の `CFBundleIdentifier` で自動検出） | WDA xctest runner の bundle id。未設定時はビルドした .app の `Info.plist` から自動検出（.app と不一致で起動ループが "No app with bundle id ... found" で失敗するのを防ぐ）。 |
 | `IOS_CONNECT_WDA_BUILD_EPOCH` | None（`vendor/*.app` の mtime で自動検出） | WDA .app のビルド日時（UNIX epoch 秒）。署名残日数の基準。未設定時は .app mtime から自動検出。 |
 
 例（Mac）:
 ```bash
 export IOS_CONNECT_UDID=00008130-000250C201F0001C
-export IOS_CONNECT_WDA_BUNDLE=com.<your-reverse-domain>.WebDriverAgentRunner.xctrunner
+# IOS_CONNECT_WDA_BUNDLE は未設定で OK（.app から自動検出）。明示上書きのみ設定。
 ```
 
 ---
