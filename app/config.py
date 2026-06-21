@@ -27,16 +27,13 @@ class Settings:
         "IOS_CONNECT_WDA_BUNDLE", "com.example.WebDriverAgentRunner.xctrunner"
     )
 
-    # WDA 起動時に WDA が起動する target app（セッションの起動対象）。
+    # WDA 起動時に WDA が起動する target app（セッションの起動対象）= FGO で固定。
     # 画面キャプチャ(MJPEG)・座標タップ/スワイプは target に依存せず全画面に作用するが、
     # セッションは target app が生存している間だけ維持される。
-    # 2026-06-21: springboard(ホーム画面) を target にすると iOS26 の WDA 起動ロック壁で
-    # create_session が "not, or could not be, unlocked" で失敗した。検証として Fate/GO
-    # (com.aniplex.fategrandorder) を target に切り替え: ゲームアプリは前面維持されやすく
-    # バックグラウンド kill に強い。Fate/GO 起動中の画面・操作を本線検証する。
-    wda_target_bundle_id: str = os.environ.get(
-        "IOS_CONNECT_TARGET_BUNDLE", "com.aniplex.fategrandorder"
-    )
+    # springboard 等のシステム UI を target にすると iOS26 が WDA 起動時にデバイスをロックさせ
+    # create_session が "not, or could not be, unlocked" で失敗する（ロック壁）。FGO は前面維持され
+    # やすくバックグラウンド kill に強いためロック壁を回避できる。
+    wda_target_bundle_id: str = "com.aniplex.fategrandorder"
 
     # サーバが listen するホスト/ポート（ブラウザ UI 用）。
     host: str = "127.0.0.1"
